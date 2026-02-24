@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../../core/models/expense_model.dart';
 
 class AppDatabase {
   static const _expensesKey = 'db_expenses';

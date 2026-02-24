@@ -44,6 +44,8 @@ dependencies:
   fl_chart: ^0.68.0
   path_provider: ^2.0.0
   shared_preferences: ^2.3.0
+  telephony: ^0.2.0
+  flutter_local_notifications: ^17.0.0
   http: ^1.6.0
   interactive_chart: ^0.3.6
   google_generative_ai: ^0.4.7

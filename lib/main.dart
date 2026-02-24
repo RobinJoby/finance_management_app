@@ -1,13 +1,20 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'core/config/app_secrets.dart';
+import 'core/services/sms/sms_listener_service.dart';
+import 'core/services/sms/sms_notification_util.dart';
 import 'features/ledger/presentation/main_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Load .env file (contains GEMINI_API_KEY)
+  await dotenv.load(fileName: '.env');
 
   // Initialize date formatting
   await initializeDateFormatting();
@@ -15,7 +22,18 @@ Future<void> main() async {
   // Initialize Supabase
   await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
 
-  runApp(const ProviderScope(child: CyberFinanceApp()));
+  // Initialize local notifications channel
+  await SmsNotificationUtil.initialize();
+
+  // Create a shared ProviderContainer so the SMS service and UI share state.
+  // ProviderScope receives this container via the `parent` param below.
+  final container = ProviderContainer();
+
+  // Initialize and start the SMS listener (no-op on non-Android platforms).
+  SmsListenerService.initialize(container);
+  unawaited(SmsListenerService.startListening());
+
+  runApp(ProviderScope(parent: container, child: const CyberFinanceApp()));
 }
 
 class CyberFinanceApp extends StatelessWidget {
