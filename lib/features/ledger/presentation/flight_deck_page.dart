@@ -12,6 +12,9 @@ import 'flight_deck_page_wickpainter.dart';
 import '../../gamification/presentation/widgets/top_bar.dart';
 
 import '../../gamification/presentation/widgets/varsity_orbit_panel.dart';
+import '../../gamification/user_stats_provider.dart';
+import '../../trading/data/portfolio_provider.dart';
+import '../../trading/domain/models/open_position.dart';
 
 class FlightDeckPage extends ConsumerStatefulWidget {
   const FlightDeckPage({super.key});

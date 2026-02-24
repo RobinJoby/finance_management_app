@@ -18,14 +18,36 @@ final marketAssetsProvider = FutureProvider<List<MarketAsset>>((ref) async {
 abstract class MarketRepository {
   Future<List<MarketAsset>> fetchAssets();
   Future<List<MockCandle>> getAssetHistory(String assetId, String interval);
+
+  /// Live USD → INR rate captured during the last Yahoo fetch.
+  /// Falls back to 84.0 if Yahoo has not been called yet.
+  double get usdToInr;
 }
+
+/// Provider that exposes the latest USD/INR exchange rate.
+/// Updated each time [marketAssetsProvider] fetches data.
+final usdInrRateProvider = Provider<double>((ref) {
+  final service = ref.watch(marketServiceProvider);
+  return service.usdToInr;
+});
 
 class MixedMarketService implements MarketRepository {
   final http.Client _client = http.Client();
 
+  /// Fallback rate until Yahoo returns the live rate.
+  double _usdToInr = 84.0;
+
+  @override
+  double get usdToInr => _usdToInr;
+
   // CoinGecko API for Crypto
-  final String _cryptoApiUrl = 
+  final String _cryptoApiUrl =
       'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin,ethereum,dogecoin&order=market_cap_desc&per_page=10&page=1&sparkline=false';
+
+  // Yahoo Finance API - single batch call for Stocks, Indices, Commodities, Forex
+  // %5E = ^ (index prefix), %3D = = (futures suffix)
+  final String _yahooApiUrl =
+      'https://query1.finance.yahoo.com/v7/finance/quote?symbols=AAPL,RELIANCE.NS,%5EGSPC,%5EIXIC,GC%3DF,CL%3DF,INR%3DX';
 
   @override
   Future<List<MarketAsset>> fetchAssets() async {
@@ -64,14 +86,81 @@ class MixedMarketService implements MarketRepository {
       assets.addAll(_getMockSectorC());
     }
 
-    // 2. Add Sector B (Stocks -> Thrusters + Fleets)
-    assets.addAll(_getMockSectorB_Thrusters());
-    assets.addAll(_getMockSectorB_Fleets());
+    // 2. Fetch Stocks, Indices, Commodities (Yahoo Finance - single batch call)
+    bool yahooSuccess = false;
+    try {
+      final yResponse = await _client.get(
+        Uri.parse(_yahooApiUrl),
+        headers: {
+          'User-Agent': 'Mozilla/5.0',
+          'Accept': 'application/json',
+        },
+      ).timeout(const Duration(seconds: 8));
 
-    // 3. Add Sector A (Commodities/Forex -> Life Support)
-    assets.add(_getMockSectorA('gold', 'Gold', 2030.50, 2));
-    assets.add(_getMockSectorA('oil', 'Crude Oil', 78.40, 2));
-    assets.add(_getMockSectorA('usdinr', 'USD/INR', 83.12, 1));
+      if (yResponse.statusCode == 200) {
+        final Map<String, dynamic> data = json.decode(yResponse.body);
+        final results = data['quoteResponse']?['result'] as List<dynamic>?;
+
+        if (results != null && results.isNotEmpty) {
+          yahooSuccess = true;
+
+          // --- Pass 1: capture live USD/INR rate ---
+          for (final item in results) {
+            if ((item['symbol'] ?? '') == 'INR=X') {
+              final rate = (item['regularMarketPrice'] as num?)?.toDouble();
+              if (rate != null && rate > 0) _usdToInr = rate;
+              break;
+            }
+          }
+          print('[MarketService] USD/INR rate: $_usdToInr');
+
+          // --- Pass 2: build assets ---
+          for (final item in results) {
+            final String symbol = (item['symbol'] ?? '').toString();
+            final double priceRaw = (item['regularMarketPrice'] as num?)?.toDouble() ?? 0.0;
+            final double change = (item['regularMarketChangePercent'] as num?)?.toDouble() ?? 0.0;
+
+            // Convert USD-denominated assets to INR
+            final double price = _toInr(symbol, priceRaw);
+
+            if (symbol == 'AAPL') {
+              // AAPL is on NYSE (USD) - converted to INR
+              assets.add(_buildAsset('aapl', 'AAPL', 'Apple Inc. (INR)', price, change, AssetType.thruster, AssetSubType.stock, 3));
+            } else if (symbol == 'RELIANCE.NS') {
+              // Reliance is on NSE (already INR)
+              assets.add(_buildAsset('reliance', 'RELIANCE', 'Reliance Ind.', price, change, AssetType.thruster, AssetSubType.stock, 3));
+            } else if (symbol == '^GSPC') {
+              // S&P 500 is USD - converted to INR
+              assets.add(_buildAsset('sp500', 'SPX', 'S&P 500 (INR)', price, change, AssetType.fleet, AssetSubType.marketIndex, 4));
+            } else if (symbol == '^IXIC') {
+              // NASDAQ is USD - converted to INR
+              assets.add(_buildAsset('nasdaq', 'NDX', 'NASDAQ (INR)', price, change, AssetType.fleet, AssetSubType.marketIndex, 4));
+            } else if (symbol == 'GC=F') {
+              // Gold is USD/oz - converted to INR
+              assets.add(_buildAsset('gold', 'GOLD', 'Gold (INR/oz)', price, change, AssetType.lifeSupport, AssetSubType.forex, 2));
+            } else if (symbol == 'CL=F') {
+              // Crude Oil is USD/bbl - converted to INR
+              assets.add(_buildAsset('oil', 'OIL', 'Crude Oil (INR)', price, change, AssetType.lifeSupport, AssetSubType.forex, 2));
+            } else if (symbol == 'INR=X') {
+              // USD/INR rate itself - show raw (not doubled)
+              assets.add(_buildAsset('usdinr', 'USD/INR', 'USD/INR Rate', priceRaw, change, AssetType.lifeSupport, AssetSubType.forex, 1));
+            }
+          }
+        }
+      }
+    } catch (e) {
+      print('[MarketService] Yahoo Finance fetch failed: $e');
+    }
+
+    // Fallback: use mock data if Yahoo call failed or returned empty
+    if (!yahooSuccess) {
+      print('[MarketService] Using mock fallback for stocks/indices/commodities.');
+      assets.addAll(_getMockSectorB_Thrusters());
+      assets.addAll(_getMockSectorB_Fleets());
+      assets.add(_getMockSectorA('gold', 'Gold', 2030.50, 2));
+      assets.add(_getMockSectorA('oil', 'Crude Oil', 78.40, 2));
+      assets.add(_getMockSectorA('usdinr', 'USD/INR', 83.12, 1));
+    }
 
     return assets;
   }
@@ -133,7 +222,35 @@ class MixedMarketService implements MarketRepository {
     return candles;
   }
 
-  // --- Mock Generators ---
+  // --- Helpers ---
+
+  /// Symbols that are USD-denominated and need INR conversion.
+  static const _usdSymbols = {'AAPL', '^GSPC', '^IXIC', 'GC=F', 'CL=F'};
+
+  /// Convert [priceUsd] to INR if [symbol] is USD-denominated; pass-through otherwise.
+  double _toInr(String symbol, double priceUsd) {
+    if (_usdSymbols.contains(symbol)) return priceUsd * _usdToInr;
+    return priceUsd; // RELIANCE.NS and INR=X are already in INR
+  }
+
+  MarketAsset _buildAsset(
+    String id, String symbol, String name,
+    double price, double change,
+    AssetType type, AssetSubType subType, int level,
+  ) {
+    return MarketAsset(
+      id: id,
+      symbol: symbol,
+      name: name,
+      currentPrice: price,
+      percentChange24h: change,
+      type: type,
+      subType: subType,
+      minLevelRequired: level,
+    );
+  }
+
+  // --- Mock Generators (fallback when network is unavailable) ---
 
   List<MarketAsset> _getMockSectorC() {
     return [
